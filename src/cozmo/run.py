@@ -87,14 +87,14 @@ class DeviceConnector:
         if enable_env_vars:
             self.parse_env_vars()
 
-    async def connect(self, loop, protocol_factory):
+    async def connect(self, loop, protocol_factory, conn_check):
         '''Connect attempts to open a connection transport to the Cozmo app on a device.
 
         On opening a transport it will create a protocol from the supplied
         factory and connect it to the transport, returning a (transport, protocol)
         tuple. See :meth:`asyncio.BaseEventLoop.create_connection`
         '''
-        raise NotImplemented()
+        raise NotImplementedError
 
     def parse_env_vars(self):
         try:
@@ -344,6 +344,7 @@ class FirstAvailableConnector(DeviceConnector):
     This is the default connector used by ``connect_`` functions.
     '''
     def __init__(self):
+        super().__init__(self, enable_env_vars=False)
         self.tcp = TCPConnector()
         self.ios = IOSConnector()
         self.android = AndroidConnector()
@@ -490,6 +491,8 @@ def _connect_async(f, conn_factory=conn.CozmoConnection, connector=None):
     coz_conn = connect_on_loop(loop, conn_factory, connector)
     try:
         loop.run_until_complete(f(coz_conn))
+    except KeyboardInterrupt:
+        logger.info('Exit requested by user')
     finally:
         loop.run_until_complete(coz_conn.shutdown())
         loop.stop()
@@ -739,6 +742,8 @@ def run_program(f, use_viewer=False, conn_factory=conn.CozmoConnection,
             try:
                 robot = await sdk_conn.wait_for_robot()
                 await f(robot)
+            except exceptions.SDKShutdown:
+                pass
             except KeyboardInterrupt:
                 logger.info('Exit requested by user')
     else:
@@ -747,6 +752,8 @@ def run_program(f, use_viewer=False, conn_factory=conn.CozmoConnection,
             try:
                 robot = sdk_conn.wait_for_robot()
                 f(robot)
+            except exceptions.SDKShutdown:
+                pass
             except KeyboardInterrupt:
                 logger.info('Exit requested by user')
 
@@ -755,5 +762,7 @@ def run_program(f, use_viewer=False, conn_factory=conn.CozmoConnection,
             connect_with_tkviewer(wrapper, conn_factory=conn_factory, connector=connector, force_on_top=force_viewer_on_top)
         else:
             connect(wrapper, conn_factory=conn_factory, connector=connector)
+    except KeyboardInterrupt:
+        logger.info('Exit requested by user')
     except exceptions.ConnectionError as e:
         sys.exit("A connection error occurred: %s" % e)

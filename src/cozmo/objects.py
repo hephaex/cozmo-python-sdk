@@ -37,7 +37,8 @@ online documentation.  They will be detected as :class:`CustomObject` instances.
 
 
 # __all__ should order by constants, event classes, other classes, functions.
-__all__ = ['LightCube1Id', 'LightCube2Id', 'LightCube3Id', 'OBJECT_VISIBILITY_TIMEOUT',
+__all__ = ['LightCube1Id', 'LightCube2Id', 'LightCube3Id', 'LightCubeIDs',
+           'OBJECT_VISIBILITY_TIMEOUT',
            'EvtObjectAppeared',
            'EvtObjectConnectChanged', 'EvtObjectConnected',
            'EvtObjectDisappeared', 'EvtObjectLocated',
@@ -241,7 +242,7 @@ class ObservableElement(event.Dispatcher):
 
     def _on_observed(self, image_box, timestamp, changed_fields):
         # Called from subclasses on their corresponding observed messages
-        newly_visible = self._is_visible == False
+        newly_visible = self._is_visible is False
         self._is_visible = True
 
         changed_fields |= {'last_observed_time', 'last_observed_robot_timestamp',
@@ -395,6 +396,9 @@ LightCube1Id = _clad_to_game_cozmo.ObjectType.Block_LIGHTCUBE1
 LightCube2Id = _clad_to_game_cozmo.ObjectType.Block_LIGHTCUBE2
 #: LightCube3Id's markers look a bit like the letters 'ab' over 'T'
 LightCube3Id = _clad_to_game_cozmo.ObjectType.Block_LIGHTCUBE3
+
+#: An ordered list of the 3 light cube IDs for convenience
+LightCubeIDs = [LightCube1Id, LightCube2Id, LightCube3Id]
 
 
 class LightCube(ObservableObject):
