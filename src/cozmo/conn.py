@@ -81,24 +81,50 @@ FORCED_ROBOT_MESSAGES = {"AnimationAborted",
                          "CarryStateUpdate",
                          "ChargerEvent",
                          "ConnectedObjectStates",
+                         "CreatedFixedCustomObject",
                          "CubeLightsStateTransition",
                          "CurrentCameraParams",
+                         "DefinedCustomObject",
+                         "DeviceAccelerometerValuesRaw",
+                         "DeviceAccelerometerValuesUser",
+                         "DeviceGyroValues",
+                         "IsDeviceIMUSupported",
                          "LoadedKnownFace",
                          "LocatedObjectStates",
+                         "MemoryMapMessage",
+                         "MemoryMapMessageBegin",
+                         "MemoryMapMessageEnd",
+                         "ObjectAccel",
+                         "ObjectAvailable",
                          "ObjectConnectionState",
+                         "ObjectMoved",
                          "ObjectPowerLevel",
                          "ObjectProjectsIntoFOV",
+                         "ObjectStoppedMoving",
+                         "ObjectTapped",
+                         "ObjectTappedFiltered",
+                         "ObjectUpAxisChanged",
+                         "PerRobotSettings",
                          "ReactionaryBehaviorTransition",
                          "RobotChangedObservedFaceID",
                          "RobotCliffEventFinished",
+                         "RobotCompletedAction",
+                         "RobotDeletedAllCustomObjects",
+                         "RobotDeletedCustomMarkerObjects",
+                         "RobotDeletedFixedCustomObjects",
+                         "RobotDelocalized",
                          "RobotErasedAllEnrolledFaces",
                          "RobotErasedEnrolledFace",
+                         "RobotObservedFace",
                          "RobotObservedMotion",
+                         "RobotObservedObject",
                          "RobotObservedPet",
                          "RobotObservedPossibleObject",
                          "RobotOnChargerPlatformEvent",
+                         "RobotPoked",
                          "RobotReachedEnrollmentCount",
                          "RobotRenamedEnrolledFace",
+                         "RobotState",
                          "UnexpectedMovement"}
 
 
@@ -202,10 +228,6 @@ class CozmoConnection(event.Dispatcher, clad_protocol.CLADProtocol):
             msg = msg._data
             robot_id = getattr(msg, 'robotID', None)
 
-            if not robot_id and self._primary_robot and (tag_name in FORCED_ROBOT_MESSAGES):
-                # Forward to the primary robot
-                robot_id = self._primary_robot.robot_id
-
             event_name = '_Msg' +  tag_name
 
             evttype = getattr(_clad, event_name, None)
@@ -213,24 +235,31 @@ class CozmoConnection(event.Dispatcher, clad_protocol.CLADProtocol):
                 logger.error('Received unknown CLAD message %s', event_name)
                 return
 
-            if robot_id:
-                # dispatch robot-specific messages to Cozmo robot instances
-                return self._process_robot_msg(robot_id, evttype, msg)
-
-            self.dispatch_event(evttype, msg=msg)
+            # Dispatch messages to the robot if they either:
+            # a) are explicitly white listed in FORCED_ROBOT_MESSAGES
+            # b) have a robotID specified in the message
+            # Otherwise dispatch the message through this connection.
+            if (robot_id is not None) or (tag_name in FORCED_ROBOT_MESSAGES):
+                if robot_id is None:
+                    # The only robot ID ever used is 1, so it is safe to assume that here as a default.
+                    robot_id = 1
+                self._process_robot_msg(robot_id, evttype, msg)
+            else:
+                self.dispatch_event(evttype, msg=msg)
 
         except Exception as exc:
             # No exceptions should reach this point; it's a bug if they do.
             self.abort(exc)
 
     def _process_robot_msg(self, robot_id, evttype, msg):
-        if robot_id > 1:
-            # One day we might support multiple robots.. if we see a robot_id != 1
-            # currently though, it's an error.
-            # Note: MsgRobotPoked always sends the wrong id through currently
+        if robot_id != 1:
+            # Note: some messages replace robotID with value!=1 (like mfgID for example)
+            #       as a result, this log may fire quite often. Log Level is set to debug
+            #       since it suppressed by default (prevents spamming).
             logger.debug('INVALID ROBOT_ID SEEN robot_id=%s event=%s msg=%s', robot_id, evttype, msg.__str__())
             robot_id = 1 # XXX remove when errant messages have been fixed
 
+        # Note: this code constructs the robot if it doesn't exist at this time
         robot = self._robots.get(robot_id)
         if not robot:
             logger.info('Found robot id=%s', robot_id)
@@ -341,15 +370,14 @@ class CozmoConnection(event.Dispatcher, clad_protocol.CLADProtocol):
             line_separator = "=" * 80
             error_message = "\n" + line_separator + "\n"
 
+            def _trimmed_version(ver_string):
+                # Trim leading zeros from the version string.
+                trimmed_string = ""
+                for i in ver_string.split("."):
+                    trimmed_string += str(int(i)) + "."
+                return trimmed_string[:-1]  # remove trailing "."
+
             if not build_versions_match:
-
-                def _trimmed_version(ver_string):
-                    # Trim leading zeros from the version string.
-                    trimmed_string = ""
-                    for i in ver_string.split("."):
-                        trimmed_string += str(int(i)) + "."
-                    return trimmed_string[:-1]  # remove trailing "."
-
                 error_message += ("App and SDK versions do not match!\n"
                                   "----------------------------------\n"
                                   "SDK's cozmoclad version: %s\n"
@@ -379,13 +407,19 @@ class CozmoConnection(event.Dispatcher, clad_protocol.CLADProtocol):
                                   'Your Python and C++ CLAD versions do not match - connection refused.\n'
                                   'Please check that you have the most recent versions of both the SDK and the\n'
                                   'Cozmo app. You may update your SDK by calling:\n'
-                                  '"pip3 install --user --ignore-installed cozmo".\n'
+                                  '"pip3 install --user --upgrade cozmo".\n'
                                   'Please also check the app store for a Cozmo app update.\n')
 
             error_message += line_separator
             logger.error(error_message)
 
-            exc = exceptions.SDKVersionMismatch("SDK library does not match software running on device")
+            exc = exceptions.SDKVersionMismatch("SDK library does not match software running on device",
+                                                sdk_version=version.__version__,
+                                                sdk_app_version=cozmoclad.__version__,
+                                                app_version=_trimmed_version(msg.buildVersion))
+
+            self._abort_connection = True  # Ignore remaining messages - they're not safe to unpack
+
             self.abort(exc)
             return
 

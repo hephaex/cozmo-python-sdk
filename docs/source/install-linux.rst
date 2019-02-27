@@ -4,8 +4,6 @@
 Installation - Linux
 ####################
 
-.. important:: THIS IS THE COZMO SDK BETA. The SDK is under development and is subject to change.
-
 This guide provides instructions on installing the Cozmo SDK for computers running with an Ubuntu Linux operating system.
 
 .. warning:: The Cozmo SDK is tested and and supported on Ubuntu 14.04 and 16.04. Anki makes no guarantee the Cozmo SDK will work on other versions of Linux.  If you wish to try the Cozmo SDK on versions of Linux *other than* Ubuntu 14.04 or 16.04, please ensure the following dependencies are installed:
@@ -15,33 +13,58 @@ This guide provides instructions on installing the Cozmo SDK for computers runni
   * Android command-line tools (https://developer.android.com/studio/index.html#Other)
   * usbmuxd for iOS / :ref:`adb` for Android
 
-^^^^^^^^^^^^^^^^^^^
-Python Installation
-^^^^^^^^^^^^^^^^^^^
 
-""""""""""""
+^^^^^^^^^^^^
 Ubuntu 14.04
-""""""""""""
+^^^^^^^^^^^^
+
+"""""""""""""""""""
+Python Installation
+"""""""""""""""""""
 
 1. Type the following into your Terminal window to install Python 3.5::
 
-    sudo add-apt-repository ppa:fkrull/deadsnakes
+    sudo add-apt-repository ppa:deadsnakes
     sudo apt-get update
-    sudo apt-get install python3.5
-    sudo update-alternatives --install /usr/bin/python3 python3.5 /usr/bin/python3.5.1
+    sudo apt-get install python3.5 python3.5-tk
 
-2. Then install pip by typing in the following into the Terminal window::
+2. Then, install and set up virtualenv::
 
-    sudo apt-get install python3-setuptools
-    sudo easy_install3 pip
+    sudo apt-get install python-pip
+    pip install virtualenv
+    virtualenv -p python3.5 ~/cozmo-env
 
-3. Last, install Tkinter::
+3. Last, make sure to activate the virtualenv any time you use cozmo::
 
-    sudo apt-get install python3.5-tk
+    source ~/cozmo-env/bin/activate
 
-""""""""""""
+.. note:: You'll need to activate the virtualenv before running any python or pip commands.  Learn more about virtualenv `here <https://virtualenv.pypa.io/en/stable/userguide/>`_.
+
+""""""""""""""""
+SDK Installation
+""""""""""""""""
+
+To install the SDK, type the following into the Terminal window::
+
+    pip install 'cozmo[camera]'
+
+Note that the [camera] option adds support for processing images from Cozmo's camera.
+
+"""""""""""
+SDK Upgrade
+"""""""""""
+
+To upgrade the SDK from a previous install, enter this command::
+
+    pip install --upgrade cozmo
+
+^^^^^^^^^^^^
 Ubuntu 16.04
-""""""""""""
+^^^^^^^^^^^^
+
+"""""""""""""""""""
+Python Installation
+"""""""""""""""""""
 
 1. Type the following into your Terminal window to install Python::
 
@@ -56,9 +79,9 @@ Ubuntu 16.04
 
     sudo apt-get install python3-pil.imagetk
 
-^^^^^^^^^^^^^^^^
+""""""""""""""""
 SDK Installation
-^^^^^^^^^^^^^^^^
+""""""""""""""""
 
 To install the SDK, type the following into the Terminal window::
 
@@ -90,4 +113,6 @@ Please see the :ref:`trouble` section of the Initial Setup page for tips, or vis
 
 ----
 
-`Click here to return to the Cozmo Developer website. <http://developer.anki.com>`_
+`Terms and Conditions <https://www.anki.com/en-us/company/terms-and-conditions>`_ and `Privacy Policy <https://www.anki.com/en-us/company/privacy>`_
+
+`Click here to return to the Anki Developer website. <http://developer.anki.com>`_

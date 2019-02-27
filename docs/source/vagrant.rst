@@ -1,10 +1,10 @@
 .. _vagrant-guide:
 
+:orphan:
+
 #####################################
 Alternate Install via Virtual Machine
 #####################################
-
-.. important:: THIS IS THE COZMO SDK BETA. The SDK is under development and is subject to change.
 
 .. important:: The installation steps on this page are intended only for people that are having difficulties installing the SDK using the main Installation Guide steps.
 
@@ -136,4 +136,6 @@ For example, to run the Hello World example program, you would type ``./hello_wo
 
 ----
 
-`Click here to return to the Cozmo Developer website. <http://developer.anki.com>`_
+`Terms and Conditions <https://www.anki.com/en-us/company/terms-and-conditions>`_ and `Privacy Policy <https://www.anki.com/en-us/company/privacy>`_
+
+`Click here to return to the Anki Developer website. <http://developer.anki.com>`_

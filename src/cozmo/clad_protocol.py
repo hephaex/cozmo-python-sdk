@@ -18,6 +18,7 @@ __all__ = []
 import asyncio
 import struct
 import sys
+from threading import Lock
 
 from . import logger_protocol
 
@@ -29,6 +30,7 @@ if sys.byteorder != 'little':
 
 class CLADProtocol(asyncio.Protocol):
     '''Low level CLAD codec'''
+    _send_mutex = Lock()
 
     clad_decode_union = None
     clad_encode_union = None
@@ -38,6 +40,7 @@ class CLADProtocol(asyncio.Protocol):
         super().__init__()
 
         self._buf = bytearray()
+        self._abort_connection = False  # abort connection on failed handshake, ignore subsequent messages!
 
     def connection_made(self, transport):
         self.transport = transport
@@ -50,9 +53,12 @@ class CLADProtocol(asyncio.Protocol):
         self._buf.extend(data)
         # pull clad messages out
 
-        while True:
+        while not self._abort_connection:
             msg = self.decode_msg()
-            if not msg:
+            # must compare msg against None, not just "if not msg" as the latter
+            # would match against any message with len==0 (which is the case
+            # for deliberately empty messages where the tag alone is the signal).
+            if msg is None:
                 return
             name = msg.tag_name
             if self._clad_log_which is LOG_ALL or (self._clad_log_which is not None and name in self._clad_log_which):
@@ -82,14 +88,21 @@ class CLADProtocol(asyncio.Protocol):
     def send_msg(self, msg, **params):
         if self.transport.is_closing():
             return
+
         name = msg.__class__.__name__
         msg = self.clad_encode_union(**{name: msg})
         msg_buf = msg.pack()
         msg_size = struct.pack('H', len(msg_buf))
-        self.transport.write(msg_size)
-        self.transport.write(msg_buf)
-        if self._clad_log_which is LOG_ALL or (self._clad_log_which is not None and name in self._clad_log_which):
-            logger_protocol.debug("SENT %s", msg)
+
+        self._send_mutex.acquire()
+        try:
+            self.transport.write(msg_size)
+            self.transport.write(msg_buf)
+            if self._clad_log_which is LOG_ALL or (self._clad_log_which is not None and name in self._clad_log_which):
+                logger_protocol.debug("SENT %s", msg)
+
+        finally:
+            self._send_mutex.release()
 
     def send_msg_new(self, msg):
         name = msg.__class__.__name__

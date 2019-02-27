@@ -17,6 +17,7 @@
 '''Display images on Cozmo's face (oled screen)
 '''
 
+import os
 import sys
 import time
 
@@ -32,16 +33,22 @@ def get_in_position(robot: cozmo.robot.Robot):
     '''If necessary, Move Cozmo's Head and Lift to make it easy to see Cozmo's face'''
     if (robot.lift_height.distance_mm > 45) or (robot.head_angle.degrees < 40):
         with robot.perform_off_charger():
-            robot.set_lift_height(0.0).wait_for_completed()
-            robot.set_head_angle(cozmo.robot.MAX_HEAD_ANGLE).wait_for_completed()
+            lift_action = robot.set_lift_height(0.0, in_parallel=True)
+            head_action = robot.set_head_angle(cozmo.robot.MAX_HEAD_ANGLE,
+                                               in_parallel=True)
+            lift_action.wait_for_completed()
+            head_action.wait_for_completed()
 
 
 def cozmo_program(robot: cozmo.robot.Robot):
+    current_directory = os.path.dirname(os.path.realpath(__file__))
     get_in_position(robot)
+    sdk_png = os.path.join(current_directory, "..", "..", "face_images", "cozmosdk.png")
+    hello_png = os.path.join(current_directory, "..", "..", "face_images", "hello_world.png")
 
     # load some images and convert them for display cozmo's face
-    image_settings = [("../../face_images/cozmosdk.png", Image.BICUBIC),
-                      ("../../face_images/hello_world.png", Image.NEAREST)]
+    image_settings = [(sdk_png, Image.BICUBIC),
+                      (hello_png, Image.NEAREST)]
     face_images = []
     for image_name, resampling_mode in image_settings:
         image = Image.open(image_name)

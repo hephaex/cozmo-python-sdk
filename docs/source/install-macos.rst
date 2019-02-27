@@ -4,8 +4,6 @@
 Installation - macOS / OS X
 ###########################
 
-.. important:: THIS IS THE COZMO SDK BETA. The SDK is under development and is subject to change.
-
 This guide provides instructions on installing the Cozmo SDK for computers running with a macOS operating system.
 
 ^^^^^^^^^^^^^^^^^^^
@@ -67,4 +65,6 @@ Please see the :ref:`trouble` section of the Initial Setup page for tips, or vis
 
 ----
 
-`Click here to return to the Cozmo Developer website. <http://developer.anki.com>`_
+`Terms and Conditions <https://www.anki.com/en-us/company/terms-and-conditions>`_ and `Privacy Policy <https://www.anki.com/en-us/company/privacy>`_
+
+`Click here to return to the Anki Developer website. <http://developer.anki.com>`_

@@ -29,7 +29,7 @@ has identified.
 '''
 
 # __all__ should order by constants, event classes, other classes, functions.
-__all__ = ['EvtNewRawCameraImage', 'CameraConfig', 'Camera']
+__all__ = ['EvtNewRawCameraImage', 'EvtRobotObservedMotion', 'CameraConfig', 'Camera']
 
 import functools
 import io
@@ -88,6 +88,26 @@ class EvtNewRawCameraImage(event.Event):
     to both the raw image and a scaled and annotated version.
     '''
     image = 'A PIL.Image.Image object'
+
+
+class EvtRobotObservedMotion(event.Event):
+    '''Generated when the robot observes motion.'''
+    timestamp = "Robot timestamp for when movement was observed"
+
+    img_area = "Area of the supporting region for the point, as a fraction of the image"
+    img_pos = "Centroid of observed motion, relative to top-left corner"
+
+    ground_area = "Area of the supporting region for the point, as a fraction of the ground ROI"
+    ground_pos = "Approximate coordinates of observed motion on the ground, relative to robot, in mm"
+
+    has_top_movement = "Movement detected near the top of the robot's view"
+    top_img_pos = "Coordinates of the centroid of observed motion, relative to top-left corner"
+
+    has_left_movement = "Movement detected near the left edge of the robot's view"
+    left_img_pos = "Coordinates of the centroid of observed motion, relative to top-left corner"
+
+    has_right_movement = "Movement detected near the right edge of the robot's view"
+    right_img_pos = "Coordinates of the centroid of observed motion, relative to top-left corner"
 
 
 class CameraConfig:
@@ -215,21 +235,24 @@ class Camera(event.Dispatcher):
         self._auto_exposure_enabled = True
 
         if np is None:
-            logger.warning("Camera image processing not available due to missng NumPy or Pillow packages: %s" % _img_processing_available)
+            logger.warning("Camera image processing not available due to missing NumPy or Pillow packages: %s" % _img_processing_available)
         else:
             # set property to ensure clad initialization is sent.
             self.image_stream_enabled = False
             self.color_image_enabled = False
         self._reset_partial_state()
 
-    def enable_auto_exposure(self):
+    def enable_auto_exposure(self, enable_auto_exposure = True):
         '''Enable auto exposure on Cozmo's Camera.
 
         Enable auto exposure on Cozmo's camera to constantly update the exposure
         time and gain values based on the recent images. This is the default mode
         when any SDK program starts.
+
+        Args:
+            enable_auto_exposure (bool): whether the camera should automcatically adjust exposure
         '''
-        msg = _clad_to_engine_iface.SetCameraSettings(enableAutoExposure=True)
+        msg = _clad_to_engine_iface.SetCameraSettings(enableAutoExposure = enable_auto_exposure)
         self.robot.conn.send_msg(msg)
 
     def set_manual_exposure(self, exposure_ms, gain):
@@ -305,8 +328,7 @@ class Camera(event.Dispatcher):
         else:
             image_send_mode = _clad_to_engine_cozmo.ImageSendMode.Off
 
-        msg = _clad_to_engine_iface.ImageRequest(
-                robotID=self.robot.robot_id, mode=image_send_mode)
+        msg = _clad_to_engine_iface.ImageRequest(mode=image_send_mode)
 
         self.robot.conn.send_msg(msg)
 
@@ -400,6 +422,20 @@ class Camera(event.Dispatcher):
         self._gain = msg.cameraGain
         self._exposure_ms = msg.exposure_ms
         self._auto_exposure_enabled = msg.autoExposureEnabled
+
+    def _recv_msg_robot_observed_motion(self, evt, *, msg):
+        self.dispatch_event(EvtRobotObservedMotion,
+                            timestamp=msg.timestamp,
+                            img_area=msg.img_area,
+                            img_pos=util.Vector2(msg.img_x, msg.img_y),
+                            ground_area=msg.ground_area,
+                            ground_pos=util.Vector2(msg.ground_x, msg.ground_y),
+                            has_top_movement=(msg.top_img_area > 0),
+                            top_img_pos=util.Vector2(msg.top_img_x, msg.top_img_y),
+                            has_left_movement=(msg.left_img_area > 0),
+                            left_img_pos=util.Vector2(msg.left_img_x, msg.left_img_y),
+                            has_right_movement=(msg.right_img_area > 0),
+                            right_img_pos=util.Vector2(msg.right_img_x, msg.right_img_y))
 
     def _process_completed_image(self):
         data = self._partial_data[0:self._partial_size]

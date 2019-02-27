@@ -19,7 +19,10 @@
 This example lets you control Cozmo by Remote Control, using a webpage served by Flask.
 '''
 
+import asyncio
+import io
 import json
+import math
 import sys
 
 sys.path.append('../lib/')
@@ -37,6 +40,11 @@ try:
 except ImportError:
     sys.exit("Cannot import from PIL: Do `pip3 install --user Pillow` to install")
 
+try:
+    import requests
+except ImportError:
+    sys.exit("Cannot import from requests: Do `pip3 install --user requests` to install")
+
 
 DEBUG_ANNOTATIONS_DISABLED = 0
 DEBUG_ANNOTATIONS_ENABLED_VISION = 1
@@ -51,12 +59,12 @@ class RobotStateDisplay(cozmo.annotate.Annotator):
         bounds = [3, 0, image.width, image.height]
 
         def print_line(text_line):
-            text = cozmo.annotate.ImageText(text_line, position=cozmo.annotate.TOP_LEFT, color='lightblue')
+            text = cozmo.annotate.ImageText(text_line, position=cozmo.annotate.TOP_LEFT, outline_color='black', color='lightblue')
             text.render(d, bounds)
             TEXT_HEIGHT = 11
             bounds[1] += TEXT_HEIGHT
 
-        robot = self.world.robot
+        robot = self.world.robot  # type: cozmo.robot.Robot
 
         # Display the Pose info for the robot
 
@@ -70,6 +78,18 @@ class RobotStateDisplay(cozmo.annotate.Annotator):
 
         print_line('Accelmtr: <%.1f, %.1f, %.1f>' % robot.accelerometer.x_y_z)
         print_line('Gyro: <%.1f, %.1f, %.1f>' % robot.gyro.x_y_z)
+
+        # Display the Accelerometer and Gyro data for the mobile device
+
+        if robot.device_accel_raw is not None:
+            print_line('Device Acc Raw: <%.2f, %.2f, %.2f>' % robot.device_accel_raw.x_y_z)
+        if robot.device_accel_user is not None:
+            print_line('Device Acc User: <%.2f, %.2f, %.2f>' % robot.device_accel_user.x_y_z)
+        if robot.device_gyro is not None:
+            mat = robot.device_gyro.to_matrix()
+            print_line('Device Gyro Up: <%.2f, %.2f, %.2f>' % mat.up_xyz)
+            print_line('Device Gyro Fwd: <%.2f, %.2f, %.2f>' % mat.forward_xyz)
+            print_line('Device Gyro Left: <%.2f, %.2f, %.2f>' % mat.left_xyz)
 
 
 def create_default_image(image_width, image_height, do_gradient=False):
@@ -93,6 +113,8 @@ flask_app = Flask(__name__)
 remote_control_cozmo = None
 _default_camera_image = create_default_image(320, 240)
 _is_mouse_look_enabled_by_default = False
+_is_device_gyro_mode_enabled_by_default = False
+_gyro_driving_deadzone_ratio = 0.025
 
 _display_debug_annotations = DEBUG_ANNOTATIONS_ENABLED_ALL
 
@@ -126,6 +148,7 @@ class RemoteControlCozmo:
         self.go_slow = 0
 
         self.is_mouse_look_enabled = _is_mouse_look_enabled_by_default
+        self.is_device_gyro_mode_enabled = _is_device_gyro_mode_enabled_by_default
         self.mouse_dir = 0
 
         all_anim_names = list(self.cozmo.anim_names)
@@ -142,7 +165,7 @@ class RemoteControlCozmo:
                 self.anim_names.append(anim_name)
 
         default_anims_for_keys = ["anim_bored_01",  # 0
-                                  "id_poked_giggle",  # 1
+                                  "anim_poked_giggle",  # 1
                                   "anim_pounce_success_02",  # 2
                                   "anim_bored_event_02",  # 3
                                   "anim_bored_event_03",  # 4
@@ -181,7 +204,7 @@ class RemoteControlCozmo:
         if self.is_mouse_look_enabled:
             mouse_sensitivity = 1.5 # higher = more twitchy
             self.mouse_dir = remap_to_range(mouse_x, 0.0, 1.0, -mouse_sensitivity, mouse_sensitivity)
-            self.update_driving()
+            self.update_mouse_driving()
 
             desired_head_angle = remap_to_range(mouse_y, 0.0, 1.0, 45, -25)
             head_angle_delta = desired_head_angle - self.cozmo.head_angle.degrees
@@ -196,7 +219,7 @@ class RemoteControlCozmo:
             # cancel any current mouse-look turning
             self.mouse_dir = 0
             if was_mouse_look_enabled:
-                self.update_driving()
+                self.update_mouse_driving()
                 self.update_head()
 
 
@@ -250,7 +273,7 @@ class RemoteControlCozmo:
 
         # Update driving, head and lift as appropriate
         if update_driving:
-            self.update_driving()
+            self.update_mouse_driving()
         if update_head:
             self.update_head()
         if update_lift:
@@ -333,6 +356,9 @@ class RemoteControlCozmo:
             queued_action, action_args = self.action_queue[0]
             if queued_action(action_args):
                 self.action_queue.pop(0)
+        # Update gyro
+        if self.is_device_gyro_mode_enabled and self.cozmo.device_gyro:
+            self.update_gyro_driving()
 
 
     def pick_speed(self, fast_speed, mid_speed, slow_speed):
@@ -356,8 +382,30 @@ class RemoteControlCozmo:
             head_vel = (self.head_up - self.head_down) * head_speed
             self.cozmo.move_head(head_vel)
 
+    def scale_deadzone(self, value, deadzone, maximum):
+        if math.fabs(value) > deadzone:
+            adjustment = math.copysign(deadzone, value)
+            scaleFactor = maximum / (maximum - deadzone)
+            return (value - adjustment) * scaleFactor
+        else:
+            return 0
 
-    def update_driving(self):
+    def update_gyro_driving(self):
+        pitch, yaw, roll = self.cozmo.device_gyro.euler_angles
+        # these are multiplied by 2 because 90 degress feels better for full velocity than 180 degrees
+        drive_dir = self.scale_deadzone(pitch/math.pi, _gyro_driving_deadzone_ratio, 1) * 2
+        turn_dir = self.scale_deadzone(roll/math.pi, _gyro_driving_deadzone_ratio, 1) * 2
+
+        forward_speed = 250
+        turn_speed = 250
+        wheel_acceleration = 250
+
+        l_wheel_speed = (drive_dir * forward_speed) + (turn_speed * turn_dir)
+        r_wheel_speed = (drive_dir * forward_speed) - (turn_speed * turn_dir)
+
+        self.cozmo.drive_wheels(l_wheel_speed, r_wheel_speed, wheel_acceleration, wheel_acceleration)
+
+    def update_mouse_driving(self):
         drive_dir = (self.drive_forwards - self.drive_back)
 
         if (drive_dir > 0.1) and self.cozmo.is_on_charger:
@@ -370,7 +418,6 @@ class RemoteControlCozmo:
                 pass
 
         turn_dir = (self.turn_right - self.turn_left) + self.mouse_dir
-
         if drive_dir < 0:
             # It feels more natural to turn the opposite way when reversing
             turn_dir = -turn_dir
@@ -381,8 +428,7 @@ class RemoteControlCozmo:
         l_wheel_speed = (drive_dir * forward_speed) + (turn_speed * turn_dir)
         r_wheel_speed = (drive_dir * forward_speed) - (turn_speed * turn_dir)
 
-        self.cozmo.drive_wheels(l_wheel_speed, r_wheel_speed, l_wheel_speed*4, r_wheel_speed*4)
-
+        self.cozmo.drive_wheels(l_wheel_speed, r_wheel_speed, l_wheel_speed*4, r_wheel_speed*4 )
 
 def get_anim_sel_drop_down(selectorIndex):
     html_text = '''<select onchange="handleDropDownSelect(this)" name="animSelector''' + str(selectorIndex) + '''">'''
@@ -421,7 +467,8 @@ def handle_index_page():
             <table>
                 <tr>
                     <td valign = top>
-                        <img src="cozmoImage" id="cozmoImageId" width=640, height=480>
+                        <div id="cozmoImageMicrosoftWarning" style="display: none;color: #ff9900; text-align: center;">Video feed performance is better in Chrome or Firefox due to mjpeg limitations in this browser</div>
+                        <img src="cozmoImage" id="cozmoImageId" width=640 height=480>
                         <div id="DebugInfoId"></div>
                     </td>
                     <td width=30></td>
@@ -448,6 +495,7 @@ def handle_index_page():
                         <b>L</b> : Toggle IR Headlight: <button id="headlightId" onClick=onHeadlightButtonClicked(this) style="font-size: 14px">Default</button><br>
                         <b>O</b> : Toggle Debug Annotations: <button id="debugAnnotationsId" onClick=onDebugAnnotationsButtonClicked(this) style="font-size: 14px">Default</button><br>
                         <b>P</b> : Toggle Free Play mode: <button id="freeplayId" onClick=onFreeplayButtonClicked(this) style="font-size: 14px">Default</button><br>
+                        <b>Y</b> : Toggle Device Gyro mode: <button id="deviceGyroId" onClick=onDeviceGyroButtonClicked(this) style="font-size: 14px">Default</button><br>
                         <h3>Play Animations</h3>
                         <b>0 .. 9</b> : Play Animation mapped to that key<br>
                         <h3>Talk</h3>
@@ -468,6 +516,14 @@ def handle_index_page():
                 var gAreDebugAnnotationsEnabled = '''+ str(_display_debug_annotations) + '''
                 var gIsHeadlightEnabled = false
                 var gIsFreeplayEnabled = false
+                var gIsDeviceGyroEnabled = false
+                var gUserAgent = window.navigator.userAgent;
+                var gIsMicrosoftBrowser = gUserAgent.indexOf('MSIE ') > 0 || gUserAgent.indexOf('Trident/') > 0 || gUserAgent.indexOf('Edge/') > 0;
+                var gSkipFrame = false;
+
+                if (gIsMicrosoftBrowser) {
+                    document.getElementById("cozmoImageMicrosoftWarning").style.display = "block";
+                }
 
                 function postHttpRequest(url, dataSet)
                 {
@@ -476,21 +532,16 @@ def handle_index_page():
                     xhr.send( JSON.stringify( dataSet ) );
                 }
 
-                function updateImage()
-                {
-                    // Note: Firefox ignores the no_store and still caches, needs the "?UID" suffix to fool it
-                    document.getElementById("cozmoImageId").src="cozmoImage?" + (new Date()).getTime();
-                }
-                setInterval(updateImage , 90); // repeat every X ms
-
                 function updateCozmo()
                 {
-                    postHttpRequest("updateCozmo", {} )
-                }
-                setInterval(updateCozmo , 60);
-
-                function updateDebugInfo()
-                {
+                    if (gIsMicrosoftBrowser && !gSkipFrame) {
+                        // IE doesn't support MJPEG, so we need to ping the server for more images.
+                        // Though, if this happens too frequently, the controls will be unresponsive.
+                        gSkipFrame = true;
+                        document.getElementById("cozmoImageId").src="cozmoImage?" + (new Date()).getTime();
+                    } else if (gSkipFrame) {
+                        gSkipFrame = false;
+                    }
                     var xhr = new XMLHttpRequest();
                     xhr.onreadystatechange = function() {
                         if (xhr.readyState == XMLHttpRequest.DONE) {
@@ -498,10 +549,11 @@ def handle_index_page():
                         }
                     }
 
-                    xhr.open("POST", "getDebugInfo", true);
+                    xhr.open("POST", "updateCozmo", true);
                     xhr.send( null );
+                    setTimeout(updateCozmo , 60);
                 }
-                setInterval(updateDebugInfo, 60); // repeat every X ms
+                setTimeout(updateCozmo , 60);
 
                 function updateButtonEnabledText(button, isEnabled)
                 {
@@ -565,10 +617,19 @@ def handle_index_page():
                     postHttpRequest("setFreeplayEnabled", {isFreeplayEnabled})
                 }
 
+                function onDeviceGyroButtonClicked(button)
+                {
+                    gIsDeviceGyroEnabled = !gIsDeviceGyroEnabled;
+                    updateButtonEnabledText(button, gIsDeviceGyroEnabled);
+                    isDeviceGyroEnabled = gIsDeviceGyroEnabled
+                    postHttpRequest("setDeviceGyroEnabled", {isDeviceGyroEnabled})
+                }
+
                 updateButtonEnabledText(document.getElementById("mouseLookId"), gIsMouseLookEnabled);
                 updateButtonEnabledText(document.getElementById("headlightId"), gIsHeadlightEnabled);
                 updateDebugAnnotationButtonEnabledText(document.getElementById("debugAnnotationsId"), gAreDebugAnnotationsEnabled);
                 updateButtonEnabledText(document.getElementById("freeplayId"), gIsFreeplayEnabled);
+                updateButtonEnabledText(document.getElementById("deviceGyroId"), gIsDeviceGyroEnabled);
 
                 function handleDropDownSelect(selectObject)
                 {
@@ -605,6 +666,11 @@ def handle_index_page():
                         {
                             // Simulate a click of the mouse look button
                             onMouseLookButtonClicked(document.getElementById("mouseLookId"))
+                        }
+                        else if (keyCode == 89) // 'Y'
+                        {
+                            // Simulate a click of the device gyro button
+                            onDeviceGyroButtonClicked(document.getElementById("deviceGyroId"))
                         }
                     }
 
@@ -659,29 +725,51 @@ def handle_index_page():
     </html>
     '''
 
+def get_annotated_image():
+    image = remote_control_cozmo.cozmo.world.latest_image
+    if _display_debug_annotations != DEBUG_ANNOTATIONS_DISABLED:
+        image = image.annotate_image(scale=2)
+    else:
+        image = image.raw_image
+    return image
 
-@flask_app.route('/updateCozmo', methods=['POST'])
-def handle_updateCozmo():
-    '''Called very frequently from Javascript to provide an update loop'''
+def streaming_video(url_root):
+    '''Video streaming generator function'''
+    try:
+        while True:
+            if remote_control_cozmo:
+                image = get_annotated_image()
+
+                img_io = io.BytesIO()
+                image.save(img_io, 'PNG')
+                img_io.seek(0)
+                yield (b'--frame\r\n'
+                    b'Content-Type: image/png\r\n\r\n' + img_io.getvalue() + b'\r\n')
+            else:
+                asyncio.sleep(.1)
+    except cozmo.exceptions.SDKShutdown:
+        # Tell the main flask thread to shutdown
+        requests.post(url_root + 'shutdown')
+
+def serve_single_image():
     if remote_control_cozmo:
-        remote_control_cozmo.update()
-    return ""
+        try:
+            image = get_annotated_image()
+            if image:
+                return flask_helpers.serve_pil_image(image)
+        except cozmo.exceptions.SDKShutdown:
+            requests.post('shutdown')
+    return flask_helpers.serve_pil_image(_default_camera_image)
 
+def is_microsoft_browser(request):
+    agent = request.user_agent.string
+    return 'Edge/' in agent or 'MSIE ' in agent or 'Trident/' in agent
 
 @flask_app.route("/cozmoImage")
 def handle_cozmoImage():
-    '''Called very frequently from Javascript to request the latest camera image'''
-    if remote_control_cozmo:
-        image = remote_control_cozmo.cozmo.world.latest_image
-        if image:
-            if _display_debug_annotations != DEBUG_ANNOTATIONS_DISABLED:
-                image = image.annotate_image(scale=2)
-            else:
-                image = image.raw_image
-
-            return flask_helpers.serve_pil_image(image)
-    return flask_helpers.serve_pil_image(_default_camera_image)
-
+    if is_microsoft_browser(request):
+        return serve_single_image()
+    return flask_helpers.stream_video(streaming_video, request.url_root)
 
 def handle_key_event(key_request, is_key_down):
     message = json.loads(key_request.data.decode("utf-8"))
@@ -691,6 +779,10 @@ def handle_key_event(key_request, is_key_down):
                                         is_key_down=is_key_down)
     return ""
 
+@flask_app.route('/shutdown', methods=['POST'])
+def shutdown():
+    flask_helpers.shutdown_flask(request)
+    return ""
 
 @flask_app.route('/mousemove', methods=['POST'])
 def handle_mousemove():
@@ -748,6 +840,21 @@ def handle_setFreeplayEnabled():
     return ""
 
 
+@flask_app.route('/setDeviceGyroEnabled', methods=['POST'])
+def handle_setDeviceGyroEnabled():
+    '''Called from Javascript whenever device gyro mode is toggled on/off'''
+    message = json.loads(request.data.decode("utf-8"))
+    if remote_control_cozmo:
+        is_device_gyro_enabled = message['isDeviceGyroEnabled']
+        if is_device_gyro_enabled:
+            remote_control_cozmo.is_device_gyro_mode_enabled = True
+        else:
+            remote_control_cozmo.is_device_gyro_mode_enabled = False
+            # stop movement when turning off gyro mode
+            remote_control_cozmo.cozmo.drive_wheels(0, 0, 0, 0)
+    return ""
+
+
 @flask_app.route('/keydown', methods=['POST'])
 def handle_keydown():
     '''Called from Javascript whenever a key is down (note: can generate repeat calls if held down)'''
@@ -784,9 +891,10 @@ def handle_sayText():
     return ""
 
 
-@flask_app.route('/getDebugInfo', methods=['POST'])
-def handle_getDebugInfo():
+@flask_app.route('/updateCozmo', methods=['POST'])
+def handle_updateCozmo():
     if remote_control_cozmo:
+        remote_control_cozmo.update()
         action_queue_text = ""
         i = 1
         for action in remote_control_cozmo.action_queue:
@@ -801,6 +909,7 @@ def handle_getDebugInfo():
 def run(sdk_conn):
     robot = sdk_conn.wait_for_robot()
     robot.world.image_annotator.add_annotator('robotState', RobotStateDisplay)
+    robot.enable_device_imu(True, True, True)
 
     global remote_control_cozmo
     remote_control_cozmo = RemoteControlCozmo(robot)
@@ -815,5 +924,7 @@ if __name__ == '__main__':
     cozmo.robot.Robot.drive_off_charger_on_connect = False  # RC can drive off charger if required
     try:
         cozmo.connect(run)
+    except KeyboardInterrupt as e:
+        pass
     except cozmo.ConnectionError as e:
         sys.exit("A connection error occurred: %s" % e)

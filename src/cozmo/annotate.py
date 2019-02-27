@@ -29,6 +29,7 @@ The ImageAnnotator instance can be accessed as
 # __all__ should order by constants, event classes, other classes, functions.
 __all__ = ['DEFAULT_OBJECT_COLORS',
            'TOP_LEFT', 'TOP_RIGHT', 'BOTTOM_LEFT', 'BOTTOM_RIGHT',
+           'RESAMPLE_MODE_NEAREST', 'RESAMPLE_MODE_BILINEAR',
            'ImageText', 'Annotator', 'ObjectAnnotator', 'FaceAnnotator',
            'PetAnnotator', 'TextAnnotator', 'ImageAnnotator',
            'add_img_box_to_image', 'add_polygon_to_image', 'annotator']
@@ -38,8 +39,9 @@ import collections
 import functools
 
 try:
-    from PIL import ImageDraw
-except ImportError:
+    from PIL import Image, ImageDraw
+except (ImportError, SyntaxError):
+    # may get SyntaxError if accidentally importing old Python 2 version of PIL
     ImageDraw = None
 
 from . import event
@@ -68,6 +70,15 @@ TOP_RIGHT = TOP | RIGHT
 
 #: Bottom right position
 BOTTOM_RIGHT = BOTTOM | RIGHT
+
+if ImageDraw is not None:
+    #: Fastest resampling mode, use nearest pixel
+    RESAMPLE_MODE_NEAREST = Image.NEAREST
+    #: Slower, but smoother, resampling mode - linear interpolation from 2x2 grid of pixels
+    RESAMPLE_MODE_BILINEAR = Image.BILINEAR
+else:
+    RESAMPLE_MODE_NEAREST = None
+    RESAMPLE_MODE_BILINEAR = None
 
 
 class ImageText:
@@ -130,7 +141,7 @@ class ImageText:
             draw.text(pos, self.text, font=self.font, fill=color,
                       align=self.align, spacing=self.line_spacing)
 
-        if self.outline_color:
+        if self.outline_color is not None:
             # Pillow doesn't support outlined or shadowed text directly.
             # We manually draw the text multiple times to achieve the effect.
             if self.full_outline:
@@ -163,8 +174,8 @@ def add_img_box_to_image(image, box, color, text=None):
             of ImageText instances) to display multiple pieces of text.
     '''
     d = ImageDraw.Draw(image)
-    x1, y1 = box.top_left_x, box.top_left_y
-    x2, y2 = x1 + box.width, y1 + box.height
+    x1, y1 = box.left_x, box.top_y
+    x2, y2 = box.right_x, box.bottom_y
     d.rectangle([x1, y1, x2, y2], outline=color)
     if text is not None:
         if isinstance(text, collections.Iterable):
@@ -216,8 +227,8 @@ class Annotator:
 
     Subclasses of Annotator handle applying a single annotation to an image.
     '''
-    #: int: The priority of the annotator - Annotators with lower numbered
-    # priorities are applied first.
+    #: int: The priority of the annotator - Annotators with higher numbered 
+    #: priorities are applied first.
     priority = 100
 
     def __init__(self, img_annotator, priority=None):
@@ -271,7 +282,7 @@ class ObjectAnnotator(Annotator):
 
         Override or replace to customize.
         '''
-        return ImageText('%s=%d' % (obj.__class__.__name__, obj.object_id))
+        return ImageText(obj.descriptive_name)
 
 
 class FaceAnnotator(Annotator):
@@ -307,7 +318,9 @@ class FaceAnnotator(Annotator):
         '''
         expression = obj.known_expression
         if len(expression) > 0:
-            expression += " "
+            # if there is a specific known expression, then also show the score
+            # (display a % to make it clear the value is out of 100)
+            expression += "=%s%% " % obj.expression_score
         if obj.name:
             return ImageText('%s%s (%d)' % (expression, obj.name, obj.face_id))
         return ImageText('(unknown%s face %d)' % (expression, obj.face_id))
@@ -401,10 +414,10 @@ class ImageAnnotator(event.Dispatcher):
     All annotations can be disabled by setting the
     :attr:`annotation_enabled` property to False.
 
-    Eg. to disable face annotations, call
+    E.g. to disable face annotations, call
     ``coz.world.image_annotator.disable_annotator('faces')``
 
-    Annotators each have a priority number associated with them.  Annotators
+    Annotators each have a priority number associated with them. Annotators
     with a larger priority number are rendered first and may be overdrawn by those
     with a lower/smaller priority number.
     '''
@@ -437,7 +450,7 @@ class ImageAnnotator(event.Dispatcher):
                 already be defined
             annotator (:class:`Annotator` or callable): The annotator to add
                 may either by an instance of Annotator, or a factory callable
-                that will return an instance of Annotator.  The callable will
+                that will return an instance of Annotator. The callable will
                 be called with an ImageAnnotator instance as its first argument.
         Raises:
             :class:`ValueError` if the annotator is already defined.
@@ -511,16 +524,19 @@ class ImageAnnotator(event.Dispatcher):
             text = ImageText(text, position=position, color=color)
         self.add_annotator(name, TextAnnotator(self, text))
 
-    def annotate_image(self, image, scale=None, fit_size=None):
+    def annotate_image(self, image, scale=None, fit_size=None, resample_mode=RESAMPLE_MODE_NEAREST):
         '''Called by :class:`~cozmo.world.World` to annotate camera images.
 
         Args:
             image (:class:`PIL.Image.Image`): The image to annotate
             scale (float): If set then the base image will be scaled by the
                 supplied multiplier.  Cannot be combined with fit_size
-            fit_size (tuple of int (width, height)):  If set, then scale the
-                image to fit inside the supplied dimensions.  The original
-                aspect ratio will be preserved.  Cannot be combined with scale.
+            fit_size (tuple of int):  If set, then scale the image to fit inside
+                the supplied (width, height) dimensions. The original aspect
+                ratio will be preserved.  Cannot be combined with scale.
+            resample_mode (int): The resampling mode to use when scaling the
+                image. Should be either :attr:`RESAMPLE_MODE_NEAREST` (fast) or
+                :attr:`RESAMPLE_MODE_BILINEAR` (slower, but smoother).
         Returns:
             :class:`PIL.Image.Image`
         '''
@@ -531,7 +547,8 @@ class ImageAnnotator(event.Dispatcher):
             if scale == 1:
                 image = image.copy()
             else:
-                image = image.resize((int(image.width * scale), int(image.height * scale)))
+                image = image.resize((int(image.width * scale), int(image.height * scale)),
+                                     resample=resample_mode)
 
         elif fit_size is not None:
             if fit_size == (image.width, image.height):

@@ -2,8 +2,6 @@
 Getting Started With the Cozmo SDK
 ==================================
 
-.. important:: THIS IS THE COZMO SDK BETA. The SDK is under development and is subject to change.
-
 To make sure you get the best experience possible out of the SDK, please ensure you have followed the steps in the :doc:`Initial Setup </initial>`.
 
 ----------------
@@ -147,4 +145,6 @@ Now, nightnight.py is saved in the same folder as 01_hello_world.py.
 
 Now that you have written your own Cozmo program, take a look at the rest of the Cozmo SDK and at the many other example programs to get more ideas.
 
-`Click here to return to the Cozmo Developer website. <http://developer.anki.com>`_
+`Terms and Conditions <https://www.anki.com/en-us/company/terms-and-conditions>`_ and `Privacy Policy <https://www.anki.com/en-us/company/privacy>`_
+
+`Click here to return to the Anki Developer website. <http://developer.anki.com>`_
